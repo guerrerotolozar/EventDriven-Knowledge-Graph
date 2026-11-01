@@ -1,3 +1,24 @@
+# Private Vaults (Personal & Financial Data)
 Boveda/
 Boveda_AI/
+vault-template/
 
+# Dependencies
+node_modules/
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+*.log
+
+# LanceDB / Local Vector Data
+lancedb_data/
+*.lance/
+
+# OS & IDE metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

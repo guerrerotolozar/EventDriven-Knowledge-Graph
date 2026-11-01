@@ -1,0 +1,29 @@
+{
+  "name": "event-driven-knowledge-graph",
+  "version": "1.0.0",
+  "description": "Episodic memory & event-driven knowledge graph with deterministic state, undo capability, and time-decay retrieval for AI agents.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "ai-agent",
+    "episodic-memory",
+    "lancedb",
+    "knowledge-graph",
+    "event-driven",
+    "obsidian",
+    "rag",
+    "antigravity"
+  ],
+  "author": "Ronald Guerrero",
+  "license": "MIT",
+  "dependencies": {
+    "@lancedb/lancedb": "^0.18.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "uuid": "^9.0.1"
+  }
+}
