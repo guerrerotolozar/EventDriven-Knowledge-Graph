@@ -1,19 +1,64 @@
 /**
  * src/services/episodicMemoryService.js
- * 
- * Deterministic service that coordinates:
- * - LanceDB episodic insertions and rollbacks
- * - Obsidian Markdown bitácora and YAML updates (Dataview compatibility)
+ *
+ * Servicio determinista de sincronización de turnos:
+ * - Inserta hechos atómicos con step_id en LanceDB (arturo_episodic)
+ * - Detecta y ejecuta Rollback automático (UNDO) si step_id retrocede
+ * - Actualiza las notas de proyectos en OPERACIONES/ respetando el YAML de Dataview
  */
 
 const fs = require('fs');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
-const { VAULT_PATH } = require('../config/env');
-const { insertarHechoEpisodico, revertirPorStepId } = require('../repositories/vectorRepository');
+const crypto = require('crypto');
+const { VAULT_PATH, IGNORED_VAULT_DIRS } = require('../config/env');
+const { ensureVaultStructure } = require('./vaultBootstrap');
+const {
+    insertarHechoEpisodico,
+    obtenerMaxStepId,
+    revertirPorStepId
+} = require('../repositories/vectorRepository');
 
 /**
- * Handles a COMMIT event.
+ * Busca recursivamente si ya existe una nota para el proyecto dentro de OPERACIONES/.
+ */
+function findExistingProjectNote(dir, safeName) {
+    if (!fs.existsSync(dir)) return null;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+        if (entry.name.startsWith('.') || IGNORED_VAULT_DIRS.includes(entry.name)) continue;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            const found = findExistingProjectNote(fullPath, safeName);
+            if (found) return found;
+        } else if (entry.isFile() && entry.name.toLowerCase() === `${safeName.toLowerCase()}.md`) {
+            return fullPath;
+        }
+    }
+    return null;
+}
+
+/**
+ * Resuelve la ruta del archivo .md para un proyecto en OPERACIONES/.
+ */
+function resolveProjectNotePath(project_name) {
+    ensureVaultStructure(VAULT_PATH);
+    const safeProjectName = String(project_name || 'General')
+        .replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s_-]/g, '')
+        .trim()
+        .replace(/\s+/g, '_');
+
+    const operacionesDir = path.join(VAULT_PATH, 'OPERACIONES');
+    const existing = findExistingProjectNote(operacionesDir, safeProjectName);
+    if (existing) return existing;
+
+    return path.join(operacionesDir, `${safeProjectName}.md`);
+}
+
+/**
+ * Procesa un turno COMMIT determinista.
+ * Si detecta que step_id <= maxStepRegistrado para ese chat_uuid (hubo Undo implícito),
+ * revierte automáticamente los pasos posteriores antes de insertar el nuevo turno.
  */
 async function procesarCommit({
     chat_uuid,
@@ -23,134 +68,225 @@ async function procesarCommit({
     assistant_summary = '',
     project_name = 'General',
     category = 'OPERACIONES',
-    importance = 0.5
+    importance = 0.65
 }) {
-    if (typeof step_id !== 'number' || step_id < 0) {
-        throw new Error('step_id must be a non-negative integer.');
+    const stepNum = Number(step_id);
+    if (!Number.isInteger(stepNum) || stepNum < 0) {
+        throw new Error('step_id debe ser un número entero >= 0');
+    }
+    if (!chat_uuid) {
+        throw new Error('chat_uuid es obligatorio');
     }
 
-    const filesStr = Array.isArray(files_touched) ? files_touched.join(', ') : String(files_touched || '');
-    
-    // Construct high-signal factual summary
+    // 1. Verificar si hubo un Undo implícito en la sesión (stepNum <= maxPrevio)
+    const maxPrevio = await obtenerMaxStepId(chat_uuid);
+    let autoReverted = null;
+    if (maxPrevio > stepNum) {
+        autoReverted = await procesarUndo({
+            chat_uuid,
+            rollback_step: stepNum - 1,
+            project_name
+        });
+    }
+
+    const filesStr = Array.isArray(files_touched)
+        ? files_touched.join(', ')
+        : String(files_touched || '');
+
+    // Construir fact_text determinista y de alta señal semántica
     const factText = [
-        `[Proyecto: ${project_name} | Paso ${step_id}]`,
-        user_prompt ? `Petición: ${user_prompt}` : '',
-        filesStr ? `Archivos: ${filesStr}` : '',
-        assistant_summary ? `Acción: ${assistant_summary}` : ''
+        `[Proyecto: ${project_name} | Categoría: ${category} | Step ${stepNum}]`,
+        user_prompt ? `Objetivo: ${String(user_prompt).trim().substring(0, 500)}` : '',
+        filesStr ? `Archivos tocados: ${filesStr}` : '',
+        assistant_summary ? `Resultado: ${String(assistant_summary).trim().substring(0, 1200)}` : ''
     ].filter(Boolean).join(' — ');
 
-    // 1. Insert into LanceDB
+    // 2. Insertar en LanceDB (arturo_episodic)
     const record = await insertarHechoEpisodico({
-        id: uuidv4(),
+        id: crypto.randomUUID(),
         fact_text: factText,
         category,
         project_name,
         chat_uuid,
-        step_id,
+        step_id: stepNum,
         created_at: new Date().toISOString(),
-        importance,
+        importance: Number(importance ?? 0.65),
         files_touched: filesStr
     });
 
-    // 2. Update local Markdown bitácora in vault
-    actualizarBitacoraMarkdown(project_name, step_id, filesStr, assistant_summary);
+    // 3. Actualizar bitácora en Markdown respetando el YAML de Dataview
+    const notePath = actualizarBitacoraMarkdown({
+        project_name,
+        chat_uuid,
+        step_id: stepNum,
+        filesStr,
+        summary: assistant_summary || user_prompt
+    });
 
-    return record;
+    return {
+        record,
+        note_updated: notePath,
+        auto_reverted: autoReverted
+    };
 }
 
 /**
- * Handles an UNDO event.
+ * Procesa una acción UNDO determinista:
+ * Elimina en LanceDB todos los registros donde chat_uuid == X y step_id > rollback_step,
+ * y limpia las líneas correspondientes en las notas Markdown.
  */
 async function procesarUndo({ chat_uuid, rollback_step, project_name }) {
-    if (typeof rollback_step !== 'number') {
-        throw new Error('rollback_step must be an integer.');
+    const stepNum = Number(rollback_step);
+    if (!Number.isInteger(stepNum)) {
+        throw new Error('rollback_step debe ser un número entero');
+    }
+    if (!chat_uuid) {
+        throw new Error('chat_uuid es obligatorio');
     }
 
-    // 1. Rollback in LanceDB
-    await revertirPorStepId(chat_uuid, rollback_step);
+    // 1. Eliminar determinísticamente en LanceDB
+    const { deletedCount, projectsAffected } = await revertirPorStepId(chat_uuid, stepNum);
 
-    // 2. Revert bitácora lines in Markdown
-    if (project_name) {
-        revertirBitacoraMarkdown(project_name, rollback_step);
+    // 2. Revertir líneas en las notas Markdown de todos los proyectos afectados
+    const targets = new Set(projectsAffected);
+    if (project_name) targets.add(project_name);
+
+    const notesReverted = [];
+    for (const proj of targets) {
+        const revertedPath = revertirBitacoraMarkdown(proj, chat_uuid, stepNum);
+        if (revertedPath) notesReverted.push(revertedPath);
     }
 
-    return { chat_uuid, rollback_step, reverted: true };
+    return {
+        chat_uuid,
+        rollback_step: stepNum,
+        deleted_vectors: deletedCount,
+        notes_reverted: notesReverted
+    };
 }
 
 /**
- * Updates or appends to the project note in the Vault, respecting Dataview frontmatter.
+ * Actualiza la zona automática (`<!-- auto:begin --> ... <!-- auto:end -->`) de la nota .md
+ * del proyecto en OPERACIONES/, manteniendo como máximo los últimos 5 cambios atómicos
+ * y sin tocar jamás la zona de autor ni usar emojis.
  */
-function actualizarBitacoraMarkdown(project_name, step_id, filesStr, summary) {
+function actualizarBitacoraMarkdown({ project_name, chat_uuid, step_id, filesStr, summary }) {
     try {
-        const projectDir = path.join(VAULT_PATH, 'OPERACIONES');
-        if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
-
-        const safeProjectName = project_name.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const notePath = path.join(projectDir, `${safeProjectName}.md`);
+        const notePath = resolveProjectNotePath(project_name);
         const today = new Date().toISOString().split('T')[0];
+        const chatShort = String(chat_uuid).substring(0, 8);
+        const cleanSummary = String(summary || 'Actualización de turno')
+            .replace(/#{1,6}\s*/g, '')
+            .replace(/---+/g, '')
+            .replace(/\*\*([^*]+)\*\*/g, '$1')
+            .replace(/\r?\n+/g, ' ')
+            .replace(/\s{2,}/g, ' ')
+            .trim()
+            .substring(0, 140);
 
+        const slugId = String(project_name || 'general').toLowerCase().replace(/[^a-z0-9]+/g, '_');
         let content = '';
         if (fs.existsSync(notePath)) {
             content = fs.readFileSync(notePath, 'utf8');
-            // Update fecha_actualizacion in YAML frontmatter for Dataview ordering
-            if (content.includes('fecha_actualizacion:')) {
-                content = content.replace(/fecha_actualizacion:\s*.*/, `fecha_actualizacion: ${today}`);
-            }
         } else {
-            // New note scaffolding
+            fs.mkdirSync(path.dirname(notePath), { recursive: true });
             content = [
                 '---',
-                `tipo: proyecto`,
-                `proyecto: ${project_name}`,
-                `fecha_actualizacion: ${today}`,
-                `descripcion: Bitácora y estado determinista para ${project_name}`,
+                `id: proyecto.${slugId}`,
+                'tipo: proyecto',
+                `resumen: "Proyecto ${project_name}"`,
+                'estado: activo',
+                'anclas: []',
+                'relacionados: []',
                 '---',
                 '',
-                `# 🚀 Proyecto: ${project_name}`,
+                `# ${project_name}`,
                 '',
-                '## 📝 Bitácora Automática',
+                '<!-- auto:begin -->',
+                '## Estado verificado',
+                `verificado: ${today}`,
+                '<!-- auto:end -->',
                 ''
             ].join('\n');
         }
 
-        // Ensure Bitácora header exists
-        if (!content.includes('## 📝 Bitácora Automática')) {
-            content += '\n\n## 📝 Bitácora Automática\n';
+        const logLine = `- [Step ${step_id} | ${chatShort} | ${today}] ${filesStr ? `Modificados: \`${filesStr}\` — ` : ''}${cleanSummary}`;
+
+        const autoMatch = content.match(/<!-- auto:begin -->([\s\S]*?)<!-- auto:end -->/);
+        let prevStepLines = [];
+        let statusLine = `verificado: ${today}`;
+
+        if (autoMatch) {
+            const innerLines = autoMatch[1].split(/\r?\n/);
+            for (const ln of innerLines) {
+                if (ln.startsWith('verificado:')) statusLine = ln;
+                if (/^-\s*\[Step\s+\d+/i.test(ln)) {
+                    const sameStep = new RegExp(`^-\\s*\\[Step\\s+${step_id}\\s*\\|\\s*${chatShort}\\s*\\|`, 'i');
+                    if (!sameStep.test(ln)) prevStepLines.push(ln);
+                }
+            }
         }
 
-        const logEntry = `- [Step ${step_id} | ${today}] ${filesStr ? `Modificados: ${filesStr} — ` : ''}${summary}\n`;
-        content += logEntry;
+        prevStepLines.push(logLine);
+        const recentSteps = prevStepLines.slice(-5);
+
+        const newAutoBlock = [
+            '<!-- auto:begin -->',
+            '## Estado verificado',
+            statusLine,
+            '## Cambios recientes (max 5)',
+            ...recentSteps,
+            '<!-- auto:end -->'
+        ].join('\n');
+
+        if (autoMatch) {
+            content = content.replace(/<!-- auto:begin -->[\s\S]*?<!-- auto:end -->/, newAutoBlock);
+        } else {
+            content = content.trimEnd() + '\n\n' + newAutoBlock + '\n';
+        }
 
         fs.writeFileSync(notePath, content, 'utf8');
+        return notePath;
     } catch (err) {
-        console.warn(`[VAULT_LOG] Error updating markdown log: ${err.message}`);
+        console.warn(`[VAULT_BITACORA] Aviso actualizando nota Markdown: ${err.message}`);
+        return null;
     }
 }
 
 /**
- * Reverts markdown log entries where step_id > rollback_step.
+ * Elimina de la bitácora del archivo .md cualquier línea del chat_uuid con Step > rollback_step.
  */
-function revertirBitacoraMarkdown(project_name, rollback_step) {
+function revertirBitacoraMarkdown(project_name, chat_uuid, rollback_step) {
     try {
-        const safeProjectName = project_name.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const notePath = path.join(VAULT_PATH, 'OPERACIONES', `${safeProjectName}.md`);
-        if (!fs.existsSync(notePath)) return;
+        const notePath = resolveProjectNotePath(project_name);
+        if (!fs.existsSync(notePath)) return null;
 
-        let content = fs.readFileSync(notePath, 'utf8');
-        const lines = content.split('\n');
+        const chatShort = String(chat_uuid).substring(0, 8);
+        const content = fs.readFileSync(notePath, 'utf8');
+        const lines = content.split(/\r?\n/);
 
+        let modified = false;
         const filtered = lines.filter(line => {
-            const match = line.match(/- \[Step\s+(\d+)/);
+            const match = line.match(/^-\s*\[Step\s+(\d+)\s*\|\s*([^\s|\]]+)\s*\|/i);
             if (match) {
-                const step = parseInt(match[1], 10);
-                return step <= rollback_step;
+                const lineStep = parseInt(match[1], 10);
+                const lineChat = match[2];
+                if (lineChat === chatShort && lineStep > rollback_step) {
+                    modified = true;
+                    return false;
+                }
             }
             return true;
         });
 
-        fs.writeFileSync(notePath, filtered.join('\n'), 'utf8');
+        if (modified) {
+            fs.writeFileSync(notePath, filtered.join('\n'), 'utf8');
+            return notePath;
+        }
+        return null;
     } catch (err) {
-        console.warn(`[VAULT_LOG] Error reverting markdown log: ${err.message}`);
+        console.warn(`[VAULT_BITACORA] Aviso revirtiendo nota Markdown: ${err.message}`);
+        return null;
     }
 }
 
