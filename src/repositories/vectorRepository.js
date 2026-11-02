@@ -225,6 +225,7 @@ async function obtenerMaxStepId(chat_uuid) {
             .query()
             .where(`chat_uuid = '${escapedUuid}'`)
             .select(['step_id'])
+            .limit(100000)
             .toArray();
 
         if (!rows || rows.length === 0) return -1;
@@ -246,7 +247,7 @@ async function revertirPorStepId(chat_uuid, rollback_step) {
     const stepNum = Number(rollback_step);
     const condition = `chat_uuid = '${escapedUuid}' AND step_id > ${stepNum}`;
 
-    const beforeRows = await table.query().where(condition).select(['id', 'project_name', 'step_id']).toArray();
+    const beforeRows = await table.query().where(condition).select(['id', 'project_name', 'step_id']).limit(100000).toArray();
     if (beforeRows.length > 0) {
         await table.delete(condition);
     }
@@ -287,6 +288,11 @@ async function upsertChunksVault(chunks) {
 
     const table = await ensureCompatibleTable(db, TABLE_VAULT, registros[0].vector.length);
     if (table) {
+        const rutasUnicas = Array.from(new Set(registros.map(r => r.files_touched).filter(Boolean)));
+        for (const ruta of rutasUnicas) {
+            const escaped = String(ruta).replace(/'/g, "''");
+            await table.delete(`files_touched = '${escaped}'`);
+        }
         await table.add(registros);
     } else {
         await db.createTable(TABLE_VAULT, registros);
@@ -317,7 +323,7 @@ async function obtenerMapaMtimeVault() {
         const table = await ensureCompatibleTable(db, TABLE_VAULT, probeVec.length);
         if (!table) return mapa;
 
-        const rows = await table.query().select(['files_touched', 'file_mtime']).toArray();
+        const rows = await table.query().select(['files_touched', 'file_mtime']).limit(100000).toArray();
         for (const r of rows) {
             if (r.files_touched) {
                 mapa.set(r.files_touched, Number(r.file_mtime || 0));
@@ -330,11 +336,14 @@ async function obtenerMapaMtimeVault() {
 }
 
 /**
- * Verifica si una ruta pertenece a los directorios huérfanos ignorados (ej. BotTrading, Boveda).
+ * Verifica si una ruta pertenece a los directorios huérfanos ignorados (ej. BotTrading, Boveda)
+ * o archivos de bitácoras crudas de recibos transaccionales.
  */
 function isIgnoredPath(rutaStr) {
     if (!rutaStr) return false;
-    const parts = String(rutaStr).replace(/\\/g, '/').split('/');
+    const norm = String(rutaStr).replace(/\\/g, '/');
+    if (norm.includes('Bitacora_Ordenes_OasisStore')) return true;
+    const parts = norm.split('/');
     return parts.some(p => IGNORED_VAULT_DIRS.includes(p));
 }
 
@@ -342,7 +351,6 @@ function isIgnoredPath(rutaStr) {
  * Búsqueda vectorial unificada sobre:
  * - arturo_episodic (Memoria de turnos con step_id)
  * - arturo_vault (Grafo Markdown sincronizado)
- * - arturo_boveda (Puente automático con la base existente en Z:\API\lancedb_data si está disponible)
  *
  * @param {number[]} queryEmbedding
  * @param {object} options
@@ -353,19 +361,20 @@ function isIgnoredPath(rutaStr) {
 async function buscarVectorialUnificado(queryEmbedding, { limit = 15, categoryFilter = null, excludeMedia = false } = {}) {
     const candidatos = [];
 
-    // 1. Buscar en arturo_episodic
+    // 1. Buscar en arturo_episodic (distancia coseno explícita)
     const episodicTable = await openEpisodicTable();
     if (episodicTable) {
         try {
-            let search = episodicTable.vectorSearch(queryEmbedding);
+            let search = episodicTable.vectorSearch(queryEmbedding).distanceType('cosine');
             if (categoryFilter) {
                 search = search.where(`category = '${categoryFilter.replace(/'/g, "''")}'`);
             } else if (excludeMedia) {
-                search = search.where(`category != 'MEDIA_INSPIRATION'`);
+                search = search.where(`category != 'MEDIA_INSPIRATION' AND files_touched NOT LIKE 'Media/%' AND files_touched NOT LIKE '%/Media/%'`);
             }
             const rows = await search.limit(limit).toArray();
             for (const r of rows) {
                 if (isIgnoredPath(r.files_touched)) continue;
+                const dist = Number(r._distance ?? 1);
                 candidatos.push({
                     id: r.id,
                     source_table: 'episodic',
@@ -377,8 +386,8 @@ async function buscarVectorialUnificado(queryEmbedding, { limit = 15, categoryFi
                     created_at: r.created_at,
                     importance: Number(r.importance ?? 0.6),
                     files_touched: r.files_touched,
-                    distance: Number(r._distance ?? 1),
-                    similarity: Math.max(0, 1 - Number(r._distance ?? 1))
+                    distance: dist,
+                    similarity: Math.max(0, Math.min(1, 1 - dist))
                 });
             }
         } catch (err) {
@@ -386,19 +395,20 @@ async function buscarVectorialUnificado(queryEmbedding, { limit = 15, categoryFi
         }
     }
 
-    // 2. Buscar en arturo_vault
+    // 2. Buscar en arturo_vault (distancia coseno explícita)
     const vaultTable = await openVaultTable();
     if (vaultTable) {
         try {
-            let search = vaultTable.vectorSearch(queryEmbedding);
+            let search = vaultTable.vectorSearch(queryEmbedding).distanceType('cosine');
             if (categoryFilter) {
                 search = search.where(`category = '${categoryFilter.replace(/'/g, "''")}'`);
             } else if (excludeMedia) {
-                search = search.where(`category != 'MEDIA_INSPIRATION'`);
+                search = search.where(`category != 'MEDIA_INSPIRATION' AND files_touched NOT LIKE 'Media/%' AND files_touched NOT LIKE '%/Media/%'`);
             }
             const rows = await search.limit(limit).toArray();
             for (const r of rows) {
                 if (isIgnoredPath(r.files_touched)) continue;
+                const dist = Number(r._distance ?? 1);
                 candidatos.push({
                     id: r.id,
                     source_table: 'vault',
@@ -410,8 +420,8 @@ async function buscarVectorialUnificado(queryEmbedding, { limit = 15, categoryFi
                     created_at: r.created_at,
                     importance: Number(r.importance ?? 0.7),
                     files_touched: r.files_touched,
-                    distance: Number(r._distance ?? 1),
-                    similarity: Math.max(0, 1 - Number(r._distance ?? 1))
+                    distance: dist,
+                    similarity: Math.max(0, Math.min(1, 1 - dist))
                 });
             }
         } catch (err) {
@@ -419,39 +429,7 @@ async function buscarVectorialUnificado(queryEmbedding, { limit = 15, categoryFi
         }
     }
 
-    // 3. Puente con arturo_boveda existente (22,534 docs en Z:\API\lancedb_data) si está disponible
-    const legacyTable = await getLegacyBovedaTable();
-    if (legacyTable) {
-        try {
-            const rows = await legacyTable.vectorSearch(queryEmbedding).limit(limit * 2).toArray();
-            for (const r of rows) {
-                const ruta = r.ruta || '';
-                if (isIgnoredPath(ruta) || isIgnoredPath(r.carpeta)) continue;
-
-                const cat = inferCategoryFromPath(ruta || r.carpeta || '');
-                if (categoryFilter && cat !== categoryFilter) continue;
-                if (excludeMedia && cat === 'MEDIA_INSPIRATION') continue;
-
-                candidatos.push({
-                    id: r.id,
-                    source_table: 'boveda_legacy',
-                    fact_text: r.text,
-                    category: cat,
-                    project_name: r.fuente || path.basename(ruta, '.md'),
-                    chat_uuid: 'BOVEDA',
-                    step_id: 0,
-                    created_at: r.sincronizado || new Date().toISOString(),
-                    importance: cat === 'NUCLEO' ? 0.85 : (cat === 'MEDIA_INSPIRATION' ? 0.80 : 0.70),
-                    files_touched: ruta,
-                    distance: Number(r._distance ?? 1),
-                    similarity: Math.max(0, 1 - Number(r._distance ?? 1))
-                });
-            }
-        } catch {
-            // Ignorar si la tabla legacy está ocupada
-        }
-    }
-
+    candidatos.sort((a, b) => b.similarity - a.similarity);
     return candidatos;
 }
 

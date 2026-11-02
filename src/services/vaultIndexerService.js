@@ -132,6 +132,15 @@ async function sincronizarVaultIncremental({ maxFilesPerRun = 50 } = {}) {
     const notas = leerVaultRecursivo();
     const mapaPrevio = await obtenerMapaMtimeVault();
 
+    const rutasActuales = new Set(notas.map(n => n.ruta));
+    let rutasEliminadas = 0;
+    for (const rutaPrev of mapaPrevio.keys()) {
+        if (!rutasActuales.has(rutaPrev)) {
+            await eliminarChunksPorRutaVault(rutaPrev);
+            rutasEliminadas++;
+        }
+    }
+
     const pendientes = [];
     for (const nota of notas) {
         const mtimeAnt = mapaPrevio.get(nota.ruta);
@@ -157,6 +166,7 @@ async function sincronizarVaultIncremental({ maxFilesPerRun = 50 } = {}) {
         total_vault_notes: notas.length,
         pending_notes: pendientes.length,
         processed_notes: lote.length,
+        deleted_notes: rutasEliminadas,
         chunks_indexed: chunksInsertados,
         elapsed_ms: Date.now() - t0
     };

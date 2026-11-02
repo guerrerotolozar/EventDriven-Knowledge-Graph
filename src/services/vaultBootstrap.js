@@ -147,6 +147,7 @@ function leerVaultRecursivo(dir = VAULT_PATH, rootDir = VAULT_PATH) {
         if (entry.isDirectory()) {
             resultados.push(...leerVaultRecursivo(fullPath, rootDir));
         } else if (entry.isFile() && entry.name.endsWith('.md')) {
+            if (entry.name.includes('Bitacora_Ordenes_OasisStore')) continue;
             try {
                 const stats = fs.statSync(fullPath);
                 const relPath = path.relative(rootDir, fullPath).replace(/\\/g, '/');
