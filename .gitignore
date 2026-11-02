@@ -1,10 +1,12 @@
-# Private Vaults (Personal & Financial Data)
+# Private & User-Generated Vaults (NEVER commit personal knowledge graphs)
 Boveda/
 Boveda_AI/
 vault-template/
+vault/
 
 # Dependencies
 node_modules/
+package-lock.json
 
 # Environment Variables & Secrets
 .env
@@ -12,9 +14,12 @@ node_modules/
 .env.*.local
 *.log
 
-# LanceDB / Local Vector Data
+# LanceDB / Local Vector & Sync State Data
 lancedb_data/
 *.lance/
+*.db
+*.db-shm
+*.db-wal
 
 # OS & IDE metadata
 .DS_Store

@@ -1,0 +1,81 @@
+# Manifiesto de estructura del cerebro (v2, borrador piloto).
+# Define LO CERRADO: tipos, carpetas, vocabularios, tipos de ancla y raices. El contenido de cada nota es libre dentro de su plantilla.
+# Los coeficientes de peso NO se declaran en las notas; viven aqui y se calibran con consultas reales.
+
+version: 2
+
+# Alias de raiz usados en las anclas de las notas. Las rutas reales se resuelven por variables de entorno o configuracion local.
+raices:
+  "@api":      { env: "ROOT_ALIAS_API",      default: "../API" }
+  "@cerebro":  { env: "ROOT_ALIAS_CEREBRO",  default: "." }
+  "@servidor": { env: "ROOT_ALIAS_SERVIDOR", default: ".." }
+  "@bot":      { env: "ROOT_ALIAS_BOT",      default: "../BotTrading" }
+  "@whisper":  { env: "ROOT_ALIAS_WHISPER",  default: "../WhisperService" }
+  "@webapps":  { env: "ROOT_ALIAS_WEBAPPS",  default: "../WebApps" }
+  "@uni":      { env: "ROOT_ALIAS_UNI",      default: "../Projects" }
+
+estados: [idea, planeado, activo, produccion, mantenimiento, pausado, archivado, por_verificar]
+# por_verificar = no hay evidencia suficiente para clasificar; el servidor lo resuelve cuando existan anclas.
+
+tipos_de_ancla: [ruta, glob, carpeta, repo, contenedor, servicio, url]
+
+campos_frontmatter:
+  obligatorios: [id, tipo, resumen, estado, anclas, relacionados]
+  opcionales: [tags, aliases]   # aliases: nombres antiguos para que los wikilinks de Obsidian sigan resolviendo tras fusiones
+  prohibidos: [peso, importancia, prioridad, fecha_actualizacion]   # numericos o derivables: los calcula el servidor
+
+zona_maquina:
+  inicio: "<!-- auto:begin -->"
+  fin: "<!-- auto:end -->"
+  regla: "El servidor solo escribe entre estos marcadores. Se excluye del embedding de la nota."
+
+limites_por_tipo:            # lineas maximas de la zona de autor
+  nucleo: 150
+  proyecto: 120
+  sistema: 150
+  herramienta: 120
+  concepto: 150
+  negocio: 120
+  vida: 100
+  decision: 60
+
+secciones_por_tipo:
+  herramienta: [Definicion, Componentes, Operacion, "Decisiones y restricciones", Relaciones]
+  proyecto:    [Definicion, Componentes, Operacion, "Decisiones y restricciones", Relaciones]
+  sistema:     [Definicion, Componentes, Operacion, "Decisiones y restricciones", Relaciones]
+  concepto:    [Definicion, Fundamentos, Aplicacion, Relaciones]
+  decision:    [Contexto, Decision, Consecuencias]
+
+carpetas:                    # unicas carpetas permitidas; nadie crea otras
+  - NUCLEO
+  - OPERACIONES/Proyectos                  # una subcarpeta por entidad: Proyectos/<Nombre>/
+  - OPERACIONES/Infraestructura
+  - OPERACIONES/Infraestructura/Modelos
+  - OPERACIONES/Herramientas/APIs y Testing
+  - OPERACIONES/Herramientas/Bases de Datos
+  - OPERACIONES/Herramientas/Frameworks y Librerias
+  - OPERACIONES/Herramientas/IA
+  - OPERACIONES/Herramientas/Infraestructura
+  - OPERACIONES/Herramientas/Lenguajes
+  - OPERACIONES/Herramientas/Multimedia
+  - OPERACIONES/Conceptos                  # subcarpetas por dominio, definidas en `dominios_concepto`
+  - OPERACIONES/Finanzas
+  - OPERACIONES/Decisiones
+  - OPERACIONES/_Bandeja                   # lo que no encaja; revision humana
+  - VIDA                                   # subcarpetas por area personal del usuario
+  - Media                                  # crudo generado por el pipeline de descarga
+
+dominios_concepto: [IA, Desarrollo, Automatizacion, Datos, Multimedia, Agentes]   # pendiente de validar en el lote Conceptos
+
+excluir_del_indice: [BotTrading, Boveda, ".stfolder", ".obsidian", ".trash"]
+# BotTrading: carpeta del bot (incluye Conocimiento_Migrado/ con las notas de trading trasladadas). Se reactiva quitandola de esta lista.
+
+politica_por_tipo:           # tentativo, a calibrar con consultas reales y qwen3-embedding:8b
+  nucleo:      { decaimiento: 0.0,   boost_base: alto }
+  proyecto:    { decaimiento: 0.01,  boost_base: medio }
+  sistema:     { decaimiento: 0.004, boost_base: medio }
+  herramienta: { decaimiento: 0.002, boost_base: medio }
+  concepto:    { decaimiento: 0.001, boost_base: bajo }
+  negocio:     { decaimiento: 0.002, boost_base: medio }
+  vida:        { decaimiento: 0.001, boost_base: medio }
+  media:       { decaimiento: 0.005, boost_base: bajo }
