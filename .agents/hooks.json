@@ -1,0 +1,19 @@
+{
+  "episodic-memory-sync": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node Z:/Cerebro/src/hooks/agyLifecycleHook.js pre",
+        "timeout": 10
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node Z:/Cerebro/src/hooks/agyLifecycleHook.js stop",
+        "timeout": 15
+      }
+    ]
+  }
+}
