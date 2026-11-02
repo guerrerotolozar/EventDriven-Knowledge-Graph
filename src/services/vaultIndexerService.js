@@ -50,11 +50,27 @@ function calcularPesoDinamicoNota(nota) {
     };
     let score = basePorTipo[tipo] || (nota.category === 'NUCLEO' ? 0.88 : 0.68);
 
-    // Modificador por estado real
-    if (estado === 'produccion' || estado === 'activo') score += 0.08;
-    else if (estado === 'planeado' || estado === 'idea' || estado === 'por_verificar') score -= 0.06;
-    else if (estado === 'pausado') score -= 0.35;
-    else if (estado === 'archivado') score -= 0.50;
+    // Modificador por estado real:
+    // Las herramientas (`herramienta`) y conceptos (`concepto`) representan conocimiento técnico reutilizable
+    // (recetas, patrones, librerías documentadas por si se usan en un proyecto futuro). Aunque el proyecto
+    // donde nacieron esté en pausa (`pausado`), NO se penaliza su relevancia técnica para que el RAG las conecte
+    // intuitivamente cuando un problema nuevo coincida con su dominio.
+    const esConocimientoReutilizable = tipo === 'herramienta' || tipo === 'concepto';
+
+    if (estado === 'produccion' || estado === 'activo') {
+        score += 0.08;
+    } else if (esConocimientoReutilizable) {
+        // Conocimiento técnico documentado (ej. Canvas API, FastAPI, Moonlight): mantiene su relevancia intacta
+        if ( raw.includes('```') || raw.includes('## Aprendizaje') || raw.includes('## La Solución') ) {
+            score += 0.06; // Bono por receta práctica / código reutilizable documentado
+        }
+    } else if (estado === 'planeado' || estado === 'idea' || estado === 'por_verificar') {
+        score -= 0.06;
+    } else if (estado === 'pausado') {
+        score -= 0.25;
+    } else if (estado === 'archivado') {
+        score -= 0.45;
+    }
 
     // Bono por anclas declaradas al servidor
     const anclasCount = (fmText.match(/^\s*-\s+(ruta|glob|carpeta|repo|contenedor|servicio):/gm) || []).length;

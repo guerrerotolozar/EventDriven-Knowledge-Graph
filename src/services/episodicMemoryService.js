@@ -18,28 +18,63 @@ const {
     revertirPorStepId
 } = require('../repositories/vectorRepository');
 
+function foldStr(s) {
+    return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
 /**
- * Busca recursivamente si ya existe una nota para el proyecto dentro de OPERACIONES/.
+ * Busca recursivamente si ya existe una nota para el proyecto dentro de OPERACIONES/:
+ * 1. Coincidencia exacta por nombre de archivo (`<safeName>.md`).
+ * 2. Coincidencia en `aliases:` o `anclas:` dentro del frontmatter YAML (la nota manda al código).
  */
 function findExistingProjectNote(dir, safeName) {
     if (!fs.existsSync(dir)) return null;
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const targetFold = foldStr(safeName);
+    const allFiles = [];
 
-    for (const entry of entries) {
-        if (entry.name.startsWith('.') || IGNORED_VAULT_DIRS.includes(entry.name)) continue;
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-            const found = findExistingProjectNote(fullPath, safeName);
-            if (found) return found;
-        } else if (entry.isFile() && entry.name.toLowerCase() === `${safeName.toLowerCase()}.md`) {
-            return fullPath;
+    function collect(currentDir) {
+        const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+        for (const entry of entries) {
+            if (entry.name.startsWith('.') || IGNORED_VAULT_DIRS.includes(entry.name)) continue;
+            const fullPath = path.join(currentDir, entry.name);
+            if (entry.isDirectory()) {
+                collect(fullPath);
+            } else if (entry.isFile() && entry.name.endsWith('.md')) {
+                allFiles.push(fullPath);
+            }
         }
     }
+    collect(dir);
+
+    // 1. Coincidencia por nombre de archivo
+    for (const filePath of allFiles) {
+        const baseName = path.basename(filePath, '.md');
+        if (foldStr(baseName) === targetFold) {
+            return filePath;
+        }
+    }
+
+    // 2. Coincidencia por aliases o anclas en el frontmatter YAML
+    for (const filePath of allFiles) {
+        try {
+            const raw = fs.readFileSync(filePath, 'utf8');
+            const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+            if (!fmMatch) continue;
+            const fm = foldStr(fmMatch[1]);
+            const lines = fm.split(/\r?\n/).map(l => l.replace(/^\s*-\s*/, '').replace(/^["']|["']$/g, '').trim());
+            if (lines.some(l => l === targetFold || l.endsWith(`/${targetFold}`) || l.endsWith(`\\${targetFold}`))) {
+                return filePath;
+            }
+        } catch {
+            // Ignorar error de lectura
+        }
+    }
+
     return null;
 }
 
 /**
- * Resuelve la ruta del archivo .md para un proyecto en OPERACIONES/.
+ * Resuelve la ruta del archivo .md para un proyecto en OPERACIONES/Proyectos/<Entidad>/<Entidad>.md.
  */
 function resolveProjectNotePath(project_name) {
     ensureVaultStructure(VAULT_PATH);
@@ -52,7 +87,11 @@ function resolveProjectNotePath(project_name) {
     const existing = findExistingProjectNote(operacionesDir, safeProjectName);
     if (existing) return existing;
 
-    return path.join(operacionesDir, `${safeProjectName}.md`);
+    const proyectosDir = path.join(operacionesDir, 'Proyectos', safeProjectName);
+    if (!fs.existsSync(proyectosDir)) {
+        fs.mkdirSync(proyectosDir, { recursive: true });
+    }
+    return path.join(proyectosDir, `${safeProjectName}.md`);
 }
 
 /**

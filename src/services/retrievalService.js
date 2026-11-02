@@ -22,7 +22,12 @@ const {
 } = require('../repositories/vectorRepository');
 
 /**
- * Calcula el puntaje híbrido con decaimiento exponencial temporal.
+ * Calcula el puntaje híbrido diferenciando entre:
+ * - Memoria Episódica (turnos de chat): aplica Time-Decay exponencial rápido (importa qué hiciste hoy).
+ * - Conocimiento de Bóveda (Proyectos, Herramientas, Conceptos, Núcleo): el conocimiento técnico no caduca;
+ *   domina la Similitud Semántica de qwen3-embedding:8b (78%) + Relevancia Estructural (22%), permitiendo
+ *   que herramientas o patrones documentados en proyectos pasados (ej. Canvas API, Header-First IMAP, FastAPI)
+ *   emerjan por intuición semántica cuando un problema nuevo los necesite.
  */
 function calcularPuntajeTimeDecay(item, nowMs = Date.now()) {
     const parsedTime = Date.parse(item.created_at);
@@ -31,15 +36,17 @@ function calcularPuntajeTimeDecay(item, nowMs = Date.now()) {
 
     const similarity = Math.max(0, Math.min(1, Number(item.similarity || 0)));
     const importance = Math.max(0.1, Math.min(1.0, Number(item.importance || 0.5)));
-    const timeDecay = Math.exp(-DECAY_LAMBDA * hoursElapsed);
+    const isEpisodic = item.source_table === 'episodic';
 
-    // Fórmula ponderada + fórmula aditiva pura para transparencia
-    const weightedScore =
-        (WEIGHT_SIMILARITY * similarity) +
-        (WEIGHT_TIME * timeDecay) +
-        (WEIGHT_IMPORTANCE * importance);
+    // Para hechos episódicos aplica DECAY_LAMBDA normal; para conocimiento de bóveda aplica decaimiento casi nulo
+    const effectiveLambda = isEpisodic ? DECAY_LAMBDA : 0.0002;
+    const timeDecay = Math.exp(-effectiveLambda * hoursElapsed);
 
-    const rawAdditiveScore = similarity + Math.exp(-0.01 * hoursElapsed) + importance;
+    const weightedScore = isEpisodic
+        ? (WEIGHT_SIMILARITY * similarity) + (WEIGHT_TIME * timeDecay) + (WEIGHT_IMPORTANCE * importance)
+        : (0.78 * similarity) + (0.22 * importance);
+
+    const rawAdditiveScore = similarity + timeDecay + importance;
 
     return {
         ...item,
@@ -113,9 +120,13 @@ function formatearBloqueContexto(memories, mediaSuggestions) {
 
     if (memories && memories.length > 0) {
         const lines = memories.map(m => {
+            const fp = String(m.files_touched || '');
+            const isToolOrConcept = fp.includes('Herramientas/') || fp.includes('Conceptos/');
             const tag = m.source_table === 'episodic'
                 ? `[EPISÓDICO Step ${m.step_id} | ${m.project_name} | hace ${m.hours_elapsed}h]`
-                : `[BÓVEDA ${m.category} | ${m.project_name}]`;
+                : isToolOrConcept
+                    ? `[INTUICIÓN TÉCNICA (Herramienta/Patrón Documentado) | ${m.project_name}]`
+                    : `[BÓVEDA ${m.category} | ${m.project_name}]`;
             return `- ${tag} (score: ${m.composite_score}, sim: ${m.similarity.toFixed(2)}): ${m.fact_text.substring(0, 350).replace(/\r?\n+/g, ' ')}`;
         });
         sections.push(`[MEMORIA EPISÓDICA Y BÓVEDA (Time-Decay Ranking)]:\n${lines.join('\n')}`);
