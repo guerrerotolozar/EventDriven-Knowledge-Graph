@@ -95,12 +95,20 @@ async function handlePreInvocation(input) {
         }
     }
 
-    const userPrompt = String(input.lastUserInput || '').trim();
-    if ((input.invocationNum && input.invocationNum > 1) || userPrompt.split(/\s+/).length < 4) {
+    const rawPrompt = String(input.lastUserInput || '')
+        .replace(/<\/?USER_REQUEST>/gi, '')
+        .trim();
+
+    // Ignorar invocaciones secundarias dentro del mismo turno o respuestas/saludos conversacionales cortos
+    const trivialRe = /^(continue|continuar|ok|okay|si|sí|dale|listo|gracias|hola(\s+como\s+(vas|estas|estás))?|buenas(\s+(tardes|noches|dias|días))?|todo\s+bien|perfecto)[?!.]*$/i;
+    if ((input.invocationNum && input.invocationNum > 1) || rawPrompt.length < 10 || trivialRe.test(rawPrompt)) {
         return { injectSteps: [] };
     }
 
-    const ctx = await recuperarContextoHibrido(userPrompt, { topK: 4 });
+    const ctx = await recuperarContextoHibrido(rawPrompt, {
+        topK: 5,
+        excludeChatUuid: chatUuid
+    });
     if (!ctx.formatted_prompt_block) {
         return { injectSteps: [] };
     }

@@ -128,7 +128,15 @@ async function ejecutarReconciliacionProfunda() {
         let nuevoContenido = nota.contenido;
 
         if (nuevoContenido.includes('<!-- auto:begin -->')) {
-            nuevoContenido = nuevoContenido.replace(/<!-- auto:begin -->[\s\S]*?<!-- auto:end -->/, autoBlock);
+            nuevoContenido = nuevoContenido.replace(
+                /<!-- auto:begin -->([\s\S]*?)<!-- auto:end -->/,
+                (_, inner) => {
+                    if (/^verificado:.*$/m.test(inner)) {
+                        return `<!-- auto:begin -->${inner.replace(/^verificado:.*$/m, lineaEstado)}<!-- auto:end -->`;
+                    }
+                    return `<!-- auto:begin -->\n## Estado verificado\n${lineaEstado}\n${inner.trim()}\n<!-- auto:end -->`;
+                }
+            );
         } else {
             nuevoContenido = `${nuevoContenido.trimEnd()}\n\n${autoBlock}\n`;
         }

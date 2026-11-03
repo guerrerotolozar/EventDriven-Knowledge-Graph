@@ -358,7 +358,7 @@ function isIgnoredPath(rutaStr) {
  * @param {string|null} options.categoryFilter - Si se especifica (ej. 'MEDIA_INSPIRATION'), filtra por categoría
  * @param {boolean} options.excludeMedia - Si true, excluye MEDIA_INSPIRATION
  */
-async function buscarVectorialUnificado(queryEmbedding, { limit = 15, categoryFilter = null, excludeMedia = false } = {}) {
+async function buscarVectorialUnificado(queryEmbedding, { limit = 15, categoryFilter = null, excludeMedia = false, excludeChatUuid = null } = {}) {
     const candidatos = [];
 
     // 1. Buscar en arturo_episodic (distancia coseno explícita)
@@ -366,10 +366,17 @@ async function buscarVectorialUnificado(queryEmbedding, { limit = 15, categoryFi
     if (episodicTable) {
         try {
             let search = episodicTable.vectorSearch(queryEmbedding).distanceType('cosine');
+            const whereClauses = [];
             if (categoryFilter) {
-                search = search.where(`category = '${categoryFilter.replace(/'/g, "''")}'`);
+                whereClauses.push(`category = '${categoryFilter.replace(/'/g, "''")}'`);
             } else if (excludeMedia) {
-                search = search.where(`category != 'MEDIA_INSPIRATION' AND files_touched NOT LIKE 'Media/%' AND files_touched NOT LIKE '%/Media/%'`);
+                whereClauses.push(`category != 'MEDIA_INSPIRATION' AND files_touched NOT LIKE 'Media/%' AND files_touched NOT LIKE '%/Media/%'`);
+            }
+            if (excludeChatUuid) {
+                whereClauses.push(`chat_uuid != '${String(excludeChatUuid).replace(/'/g, "''")}'`);
+            }
+            if (whereClauses.length > 0) {
+                search = search.where(whereClauses.join(' AND '));
             }
             const rows = await search.limit(limit).toArray();
             for (const r of rows) {

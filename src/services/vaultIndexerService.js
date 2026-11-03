@@ -92,9 +92,11 @@ function calcularPesoDinamicoNota(nota) {
  * y cualquier bitácora previa.
  */
 function dividirNotaEnChunks(nota) {
-    // Excluir zonas automáticas (auto:begin/end y Bitácora Automática)
+    // Excluir zonas automáticas (auto:begin/end, Bitácora Automática y telemetría de tiempos en Media/)
     const contenidoLimpio = nota.contenido
         .replace(/<!-- auto:begin -->[\s\S]*?<!-- auto:end -->/g, '')
+        .replace(/---\r?\n+## ⏱️ Rendimiento del Análisis Profundo[\s\S]*$/g, '')
+        .replace(/## ⏱️ Rendimiento del Análisis Profundo[\s\S]*$/g, '')
         .split(/^## 📝 Bitácora Automática/m)[0]
         .split(/^## 🔍 Radiografía Viva del Servidor/m)[0];
 

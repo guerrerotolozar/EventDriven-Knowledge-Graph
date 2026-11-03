@@ -253,13 +253,23 @@ function actualizarBitacoraMarkdown({ project_name, chat_uuid, step_id, filesStr
 
         const autoMatch = content.match(/<!-- auto:begin -->([\s\S]*?)<!-- auto:end -->/);
         let prevStepLines = [];
+        let vigilanteLines = [];
         let statusLine = `verificado: ${today}`;
 
         if (autoMatch) {
             const innerLines = autoMatch[1].split(/\r?\n/);
+            let inVigilanteSection = false;
             for (const ln of innerLines) {
-                if (ln.startsWith('verificado:')) statusLine = ln;
-                if (/^-\s*\[Step\s+\d+/i.test(ln)) {
+                if (ln.startsWith('verificado:')) {
+                    statusLine = ln;
+                    inVigilanteSection = false;
+                } else if (ln.startsWith('### 💡 Oportunidades')) {
+                    inVigilanteSection = true;
+                } else if (ln.startsWith('## ')) {
+                    inVigilanteSection = false;
+                } else if (inVigilanteSection && ln.trim().startsWith('- ')) {
+                    vigilanteLines.push(ln);
+                } else if (/^-\s*\[Step\s+\d+/i.test(ln)) {
                     const sameStep = new RegExp(`^-\\s*\\[Step\\s+${step_id}\\s*\\|\\s*${chatShort}\\s*\\|`, 'i');
                     if (!sameStep.test(ln)) prevStepLines.push(ln);
                 }
@@ -269,14 +279,18 @@ function actualizarBitacoraMarkdown({ project_name, chat_uuid, step_id, filesStr
         prevStepLines.push(logLine);
         const recentSteps = prevStepLines.slice(-5);
 
-        const newAutoBlock = [
+        const autoParts = [
             '<!-- auto:begin -->',
             '## Estado verificado',
             statusLine,
             '## Cambios recientes (max 5)',
-            ...recentSteps,
-            '<!-- auto:end -->'
-        ].join('\n');
+            ...recentSteps
+        ];
+        if (vigilanteLines.length > 0) {
+            autoParts.push('', '### 💡 Oportunidades y Conceptos Aplicables (Vigilante)', ...vigilanteLines);
+        }
+        autoParts.push('<!-- auto:end -->');
+        const newAutoBlock = autoParts.join('\n');
 
         if (autoMatch) {
             content = content.replace(/<!-- auto:begin -->[\s\S]*?<!-- auto:end -->/, newAutoBlock);
