@@ -19,6 +19,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { procesarCommit, procesarUndo } = require('../services/episodicMemoryService');
 const { recuperarContextoHibrido } = require('../services/retrievalService');
+const { sincronizarVaultIncremental } = require('../services/vaultIndexerService');
 const { obtenerMaxStepId } = require('../repositories/vectorRepository');
 
 console.log = (...args) => process.stderr.write(args.join(' ') + '\n');
@@ -103,6 +104,29 @@ async function handlePreInvocation(input) {
     const trivialRe = /^(continue|continuar|ok|okay|si|sí|dale|listo|gracias|hola(\s+como\s+(vas|estas|estás))?|buenas(\s+(tardes|noches|dias|días))?|todo\s+bien|perfecto)[?!.]*$/i;
     if ((input.invocationNum && input.invocationNum > 1) || rawPrompt.length < 10 || trivialRe.test(rawPrompt)) {
         return { injectSteps: [] };
+    }
+
+    // Disparar en segundo plano (detached, 0ms de bloqueo al turno) la sincronización incremental
+    // de la Bóveda si han pasado más de 3 minutos desde el último chequeo.
+    try {
+        const { LANCEDB_PATH } = require('../config/env');
+        const cacheFile = path.join(LANCEDB_PATH, 'vault_substance_cache.json');
+        let shouldSpawnSync = true;
+        if (fs.existsSync(cacheFile)) {
+            const ageMs = Date.now() - fs.statSync(cacheFile).mtimeMs;
+            if (ageMs < 180000) shouldSpawnSync = false;
+        }
+        if (shouldSpawnSync) {
+            const syncScript = path.resolve(__dirname, '../scripts/syncVault.js');
+            const child = spawn(process.execPath, [syncScript, '15'], {
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: true
+            });
+            child.unref();
+        }
+    } catch {
+        // Nunca bloquear PreInvocation
     }
 
     const ctx = await recuperarContextoHibrido(rawPrompt, {

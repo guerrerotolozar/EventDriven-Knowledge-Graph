@@ -8,6 +8,10 @@
  * - Clasifica automáticamente Media/ como MEDIA_INSPIRATION para el Crucero de Ideas
  */
 
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { LANCEDB_PATH } = require('../config/env');
 const { leerVaultRecursivo } = require('./vaultBootstrap');
 const {
     upsertChunksVault,
@@ -17,6 +21,55 @@ const {
 
 const MIN_CHUNK_LEN = 50;
 const MAX_CHUNK_LEN = 1400;
+const SUBSTANCE_CACHE_PATH = path.join(LANCEDB_PATH, 'vault_substance_cache.json');
+
+/**
+ * Calcula el Hash de Sustancia Cognitiva (SHA-256) de una nota Markdown,
+ * ignorando bloques de máquina (<!-- auto:begin -->...<!-- auto:end -->),
+ * propiedades volátiles de frontmatter y telemetría de rendimiento.
+ */
+function calcularHashSustancia(contenido) {
+    if (!contenido) return '';
+    const normalizado = String(contenido)
+        .replace(/<!-- auto:begin -->[\s\S]*?<!-- auto:end -->/g, '')
+        .replace(/^---\r?\n([\s\S]*?)\r?\n---/m, (full, fm) => {
+            const fmEstable = fm
+                .split(/\r?\n/)
+                .filter(line => !/^\s*(updated_at|actualizado|verificado|curado_vigilante|fecha_modificacion|mtime)\s*:/i.test(line))
+                .join('\n');
+            return `---\n${fmEstable}\n---`;
+        })
+        .replace(/---\r?\n+## ⏱️ Rendimiento del Análisis Profundo[\s\S]*$/g, '')
+        .replace(/## ⏱️ Rendimiento del Análisis Profundo[\s\S]*$/g, '')
+        .replace(/## 🧠 Conexiones Cerebrales[\s\S]*?(?=\r?\n---|\r?\n## |$)/g, '')
+        .split(/^## 📝 Bitácora Automática/m)[0]
+        .split(/^## 🔍 Radiografía Viva del Servidor/m)[0]
+        .replace(/\r\n/g, '\n')
+        .trim();
+
+    return crypto.createHash('sha256').update(normalizado, 'utf8').digest('hex');
+}
+
+function cargarCacheSustancia() {
+    try {
+        if (fs.existsSync(SUBSTANCE_CACHE_PATH)) {
+            return JSON.parse(fs.readFileSync(SUBSTANCE_CACHE_PATH, 'utf8')) || {};
+        }
+    } catch {
+        // Ignorar caché corrupta
+    }
+    return {};
+}
+
+function guardarCacheSustancia(cache) {
+    try {
+        const dir = path.dirname(SUBSTANCE_CACHE_PATH);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(SUBSTANCE_CACHE_PATH, JSON.stringify(cache, null, 2), 'utf8');
+    } catch {
+        // Ignorar errores de escritura en caché
+    }
+}
 
 /**
  * Calcula dinámicamente la importancia de una nota a partir de su frontmatter v2
@@ -128,17 +181,23 @@ function dividirNotaEnChunks(nota) {
 
 /**
  * Sincroniza incrementalmente las notas nuevas o modificadas de VAULT_PATH en arturo_vault.
+ * Aplica Hash de Sustancia Cognitiva (SHA-256) para evitar re-vectorizar cuando solo cambiaron
+ * bloques de máquina (<!-- auto:begin -->...<!-- auto:end -->) o timestamps de frontmatter.
  */
 async function sincronizarVaultIncremental({ maxFilesPerRun = 50 } = {}) {
     const t0 = Date.now();
-    const notas = leerVaultRecursivo();
+    const notas = leerVaultRecursivo(undefined, undefined, true);
     const mapaPrevio = await obtenerMapaMtimeVault();
+    const cacheSustancia = cargarCacheSustancia();
+    let cacheModificada = false;
 
     const rutasActuales = new Set(notas.map(n => n.ruta));
     let rutasEliminadas = 0;
     for (const rutaPrev of mapaPrevio.keys()) {
         if (!rutasActuales.has(rutaPrev)) {
             await eliminarChunksPorRutaVault(rutaPrev);
+            delete cacheSustancia[rutaPrev];
+            cacheModificada = true;
             rutasEliminadas++;
         }
     }
@@ -146,9 +205,31 @@ async function sincronizarVaultIncremental({ maxFilesPerRun = 50 } = {}) {
     const pendientes = [];
     for (const nota of notas) {
         const mtimeAnt = mapaPrevio.get(nota.ruta);
-        if (!mtimeAnt || mtimeAnt !== nota.mtimeMs) {
-            pendientes.push(nota);
+        const cacheEntry = cacheSustancia[nota.ruta];
+
+        if (mtimeAnt && (mtimeAnt === nota.mtimeMs || (cacheEntry && cacheEntry.mtimeMs === nota.mtimeMs))) {
+            if (!cacheEntry) {
+                cacheSustancia[nota.ruta] = { mtimeMs: nota.mtimeMs, hashSustancia: null };
+            }
+            continue;
         }
+
+        // Solo leemos el archivo por SMB cuando su mtimeMs es nuevo o cambió
+        const contenido = nota.contenido !== null ? nota.contenido : fs.readFileSync(nota.fullPath, 'utf8');
+        const nuevoHash = calcularHashSustancia(contenido);
+
+        if (!mtimeAnt) {
+            pendientes.push({ ...nota, contenido, hashSustancia: nuevoHash });
+            continue;
+        }
+
+        if (cacheEntry && cacheEntry.hashSustancia && cacheEntry.hashSustancia === nuevoHash) {
+            // Solo cambiaron bloques automáticos (<!-- auto:begin -->) o timestamps: omitir re-embedding
+            cacheSustancia[nota.ruta] = { mtimeMs: nota.mtimeMs, hashSustancia: nuevoHash };
+            continue;
+        }
+
+        pendientes.push({ ...nota, contenido, hashSustancia: nuevoHash });
     }
 
     const lote = pendientes.slice(0, maxFilesPerRun);
@@ -162,7 +243,13 @@ async function sincronizarVaultIncremental({ maxFilesPerRun = 50 } = {}) {
         if (chunks.length > 0) {
             chunksInsertados += await upsertChunksVault(chunks);
         }
+        cacheSustancia[nota.ruta] = {
+            mtimeMs: nota.mtimeMs,
+            hashSustancia: nota.hashSustancia || calcularHashSustancia(nota.contenido)
+        };
     }
+
+    guardarCacheSustancia(cacheSustancia);
 
     return {
         total_vault_notes: notas.length,
@@ -176,5 +263,6 @@ async function sincronizarVaultIncremental({ maxFilesPerRun = 50 } = {}) {
 
 module.exports = {
     sincronizarVaultIncremental,
-    dividirNotaEnChunks
+    dividirNotaEnChunks,
+    calcularHashSustancia
 };

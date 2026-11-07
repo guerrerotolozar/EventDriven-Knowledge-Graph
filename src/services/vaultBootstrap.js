@@ -121,13 +121,18 @@ function inferCategoryFromPath(relativePath) {
 
 /**
  * Lee recursivamente todas las notas .md del vault aplicando la lista negra de directorios.
+ * Si `lazyContent = true`, no ejecuta `readFileSync` por red SMB hasta que el indexador
+ * confirme que el `mtimeMs` del archivo realmente cambió.
  *
  * @param {string} dir
  * @param {string} rootDir
- * @returns {Array<{ruta: string, nombre: string, contenido: string, mtimeMs: number, createdIso: string, category: string}>}
+ * @param {boolean} lazyContent
+ * @returns {Array<{ruta: string, fullPath: string, nombre: string, contenido: string|null, mtimeMs: number, createdIso: string, category: string}>}
  */
-function leerVaultRecursivo(dir = VAULT_PATH, rootDir = VAULT_PATH) {
-    ensureVaultStructure(rootDir);
+function leerVaultRecursivo(dir = VAULT_PATH, rootDir = VAULT_PATH, lazyContent = false) {
+    if (dir === rootDir) {
+        ensureVaultStructure(rootDir);
+    }
     const resultados = [];
 
     let entries = [];
@@ -145,16 +150,17 @@ function leerVaultRecursivo(dir = VAULT_PATH, rootDir = VAULT_PATH) {
         const fullPath = path.join(dir, entry.name);
 
         if (entry.isDirectory()) {
-            resultados.push(...leerVaultRecursivo(fullPath, rootDir));
+            resultados.push(...leerVaultRecursivo(fullPath, rootDir, lazyContent));
         } else if (entry.isFile() && entry.name.endsWith('.md')) {
             if (entry.name.includes('Bitacora_Ordenes_OasisStore')) continue;
             try {
                 const stats = fs.statSync(fullPath);
                 const relPath = path.relative(rootDir, fullPath).replace(/\\/g, '/');
-                const contenido = fs.readFileSync(fullPath, 'utf8');
+                const contenido = lazyContent ? null : fs.readFileSync(fullPath, 'utf8');
 
                 resultados.push({
                     ruta: relPath,
+                    fullPath,
                     nombre: path.basename(fullPath, '.md'),
                     contenido,
                     mtimeMs: Math.floor(stats.mtimeMs),
