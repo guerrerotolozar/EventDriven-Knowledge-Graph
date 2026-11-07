@@ -152,7 +152,7 @@ function leerVaultRecursivo(dir = VAULT_PATH, rootDir = VAULT_PATH, lazyContent 
         if (entry.isDirectory()) {
             resultados.push(...leerVaultRecursivo(fullPath, rootDir, lazyContent));
         } else if (entry.isFile() && entry.name.endsWith('.md')) {
-            if (entry.name.includes('Bitacora_Ordenes_OasisStore')) continue;
+            if (entry.name.includes('Bitacora_Ordenes_OasisStore') || entry.name.includes('Mapa_Directorios_y_Espacio_Servidor')) continue;
             try {
                 const stats = fs.statSync(fullPath);
                 const relPath = path.relative(rootDir, fullPath).replace(/\\/g, '/');

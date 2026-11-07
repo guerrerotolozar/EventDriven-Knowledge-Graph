@@ -39,11 +39,11 @@ function calcularHashSustancia(contenido) {
                 .join('\n');
             return `---\n${fmEstable}\n---`;
         })
-        .replace(/---\r?\n+## ⏱️ Rendimiento del Análisis Profundo[\s\S]*$/g, '')
-        .replace(/## ⏱️ Rendimiento del Análisis Profundo[\s\S]*$/g, '')
-        .replace(/## 🧠 Conexiones Cerebrales[\s\S]*?(?=\r?\n---|\r?\n## |$)/g, '')
+        .replace(/(?:\r?\n---\r?\n+|\r?\n)*## ⏱️ Rendimiento del Análisis Profundo[\s\S]*$/g, '')
+        .replace(/(?:\r?\n---\r?\n+|\r?\n)*## 🧠 Conexiones Cerebrales[\s\S]*?(?=\r?\n---|\r?\n## |$)/g, '')
         .split(/^## 📝 Bitácora Automática/m)[0]
         .split(/^## 🔍 Radiografía Viva del Servidor/m)[0]
+        .replace(/^\s*---\s*$/gm, '')
         .replace(/\r\n/g, '\n')
         .trim();
 
@@ -145,6 +145,9 @@ function calcularPesoDinamicoNota(nota) {
  * y cualquier bitácora previa.
  */
 function dividirNotaEnChunks(nota) {
+    if (/^---\r?\n[\s\S]*?^vectorizar:\s*false\b[\s\S]*?\r?\n---/m.test(nota.contenido || '')) {
+        return [];
+    }
     // Excluir zonas automáticas (auto:begin/end, Bitácora Automática y telemetría de tiempos en Media/)
     const contenidoLimpio = nota.contenido
         .replace(/<!-- auto:begin -->[\s\S]*?<!-- auto:end -->/g, '')
